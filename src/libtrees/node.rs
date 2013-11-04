@@ -1,58 +1,34 @@
-use algorithm;
-use std::to_bytes::IterBytes;
 
-pub trait Node<K, V> {
-    fn scannode<'a>(&'a self, key: &K) -> Option<(uint, bool)>;
-    fn get<'a>(&'a self, key: &K) -> Option<&'a V>;
-    fn isLeaf(&self) -> bool;
-    fn can_contains(&self, key: &K) -> bool;
-}
-pub enum BlinkTreeNodes<N, V> {
-    InnerNodes(N),
-    Leafs(V)
+
+pub enum Node<I, L> {
+    INode(I),
+    Leaf(L)
 }
 
-struct SimpleBlinkTreeNode<'self, K,V> {
-    is_leaf: bool,
-    keys: &'self [K],
-    values: BlinkTreeNodes<&'self [uint], &'self [V]>,
-    right: Option<uint>
-}
-
-impl<'self,
-    K: TotalOrd,
-    V> Node<K,V>
-for SimpleBlinkTreeNode<'self, K, V> {
-    fn scannode<'a>(&'a self, key: &K) -> Option<(uint, bool)> {
-        if(! self.can_contains(key)) {
-            return self.right.map(|r| (r, true));
-        }
-
-        if self.isLeaf() { return None; }
-
-        let idx = algorithm::bsearch_idx(self.keys, key);
-        match self.values {
-            InnerNodes(ids) => Some((ids[idx], false)),
-            _ => None,
+impl <I,L> Node<I,L> {
+    pub fn isLeaf(&self) -> bool {
+        match self{
+            &Leaf(*)  => true,
+            &INode(*) => false
         }
     }
-    fn get<'a>(&'a self, key: &K) -> Option<&'a V> {
-        if !self.isLeaf() { return None; }
-        let idx = algorithm::bsearch_idx(self.keys, key);
-        match self.values {
-            Leafs(ids) => Some(&ids[idx]),
-            _ => None,
+    pub fn isINode(&self) -> bool {
+        match self{
+            &INode(*) => true,
+            &Leaf(*)  => false
         }
-
     }
-    fn isLeaf(&self) -> bool {
-        self.is_leaf
+    pub fn getLeaf<'a>(&'a self) -> &'a L {
+        match self{
+            &Leaf(ref l)  => l,
+            &INode(*) => fail!("called getLeaf on an INode"),
+        }
     }
-    fn can_contains(&self, key: &K) -> bool {
-        ( self.keys[0].cmp(key) == Greater ||
-          self.keys[0].cmp(key) == Equal )&&
-        ( key.cmp(&self.keys[self.keys.len()-1]) == Less||
-          key.cmp(&self.keys[self.keys.len()-1]) == Equal )
+    pub fn getINode<'a>(&'a self) -> &'a I {
+        match self{
+            &INode(ref i) => i,
+            &Leaf(*)  => fail!("called getINode on a Leaf"),
+        }
     }
-
 }
+

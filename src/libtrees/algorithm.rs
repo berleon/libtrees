@@ -16,16 +16,17 @@ pub fn bsearch_idx<V:TotalOrd>(vector: &[V], key: &V) -> uint {
     return imin;
 }
 
+
 #[cfg(test)]
 mod test {
     use super::bsearch_idx;
     #[test]
     fn test_bsearch_idx() {
         //          0 1 2 3 4  5  6
-        let exp = ~[1,3,4,6,8,10,20];
-        assert!(bsearch_idx(exp, &1) == 0);
-        assert!(bsearch_idx(exp, &4) == 2);
-        assert!(bsearch_idx(exp, &6) == 3);
-        assert!(bsearch_idx(exp, &11) == 5);
+        let example = ~[1,3,4,6,8,10,20];
+        assert!(bsearch_idx(example, &1) == 0);
+        assert!(bsearch_idx(example, &4) == 2);
+        assert!(bsearch_idx(example, &6) == 3);
+        assert!(bsearch_idx(example, &11) == 5);
     }
 }

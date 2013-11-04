@@ -1,27 +1,44 @@
-
+use std::hashmap::HashSet;
+use std::ptr;
+use std::cast;
 use extra::sync::Mutex;
-trait LockManager {
-    fn lock(&mut self, id: uint);
-    fn unlock(&mut self, id: uint);
+pub trait LockManager<T> {
+    fn lock(&self, id: T);
+    fn unlock(&self, id: &T);
 }
 
-struct SimpleLockManager<M> {
-    map: M,
+struct SimpleLockManager<T> {
+    set: HashSet<T>,
     mutex: Mutex
 }
-impl <M: Set<uint> + MutableSet<uint>> LockManager
-for SimpleLockManager<M> {
-    fn lock(&mut self, id: uint) {
-        do self.mutex.lock_cond |cond| {
-            while self.map.contains(&id) {
-                cond.wait();
-            }
-            self.map.insert(id);
+
+impl<T: Hash + Eq> SimpleLockManager<T> {
+    pub fn new() -> SimpleLockManager<T> {
+        SimpleLockManager {
+            set: HashSet::new(),
+            mutex: Mutex::new()
         }
     }
-    fn unlock(&mut self, id: uint) {
-        do self.mutex.lock || {
-            self.map.remove(&id);
+}
+impl<T: Hash + Eq + Clone> LockManager<T> for SimpleLockManager<T> {
+    fn lock(&self, id: T) {
+        do self.mutex.lock_cond |cond| {
+            while self.set.contains(&id) {
+                cond.wait();
+            }
+            unsafe {
+                let mut mut_set = cast::transmute_mut(&self.set);
+                mut_set.insert(id.clone());
+            }
+        }
+    }
+    fn unlock(&self, id: &T) {
+        do self.mutex.lock_cond |cond| {
+            unsafe {
+                let mut mut_set = cast::transmute_mut(&self.set);
+                mut_set.remove(id);
+                cond.signal();
+            }
         }
     }
 }

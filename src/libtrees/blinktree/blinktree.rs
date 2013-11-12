@@ -15,24 +15,15 @@
 
 
 use std::container::{Container};
-use std::{cast, ptr};
-
+use std::cast;
 
 use node::{Node, INode, Leaf};
 use statistics::{StatisticsManager, AtomicStatistics};
 use storage::{StorageManager, StupidHashmapStorage};
 use lock::{LockManager, SimpleLockManager};
-use blinktree::node::{BLinkNode, Right, Down, MostLeftDown, MostRightDown};
-use blinktree::node::{SimpleBLinkINode, SimpleBLinkLeaf};
-
-
-// state edge cases
-
-pub static MOST_RIGHT_NODE: u8 = 1 << 0;
-pub static MOST_LEFT_NODE: u8  = 1 << 1;
-pub static ROOT: u8            = 1 << 2;
-pub static ROOT_NEEDS_SPLIT: u8   = 1 << 3;
-
+use blinktree::blink_ops::{BLinkOps, DefaultBLinkOps, Right, Down};
+use blinktree::physical_node::{PhysicalNode, DefaultBLinkNode,
+    Root, inode_type, leaf_type};
 
 macro_rules! node_method(
     ($name:ident, $method:ident) => (
@@ -42,51 +33,26 @@ macro_rules! node_method(
         }
     );
 )
-macro_rules! unset(
-    ($name:ident, $constant:ident) => (
-        $name = $name ^ $constant;
-    )
-)
 
-macro_rules! update_state(
-    ($name:ident, $movement:expr) => (
-        match $movement {
-            Down => {
-                unset!($name, MOST_RIGHT_NODE);
-                unset!($name, ROOT);
-            }
-            MostRightDown => {
-                unset!($name, MOST_LEFT_NODE);
-                unset!($name, ROOT);
-            }
-            MostLeftDown => {
-                unset!($name, MOST_RIGHT_NODE)
-                unset!($name, ROOT);
-            }
-            Right => {
-                unset!($name, MOST_RIGHT_NODE)
-                unset!($name, ROOT);
-            }
-        }
-    );
-)
-pub struct BTree<Ptr, Storage, LockManager, Stats> {
+pub struct BTree<Ptr, Storage, LockManager, Stats, BLinkOps> {
     root: Ptr,
     storage: Storage,
     lock_manager: LockManager,
     statistics: Stats,
     max_size: uint,
+    ops: BLinkOps
 }
 
 impl<'self,
     K,
     V,
     Ptr: Clone,
-    INode: BLinkNode<K,Ptr,Ptr>,
-    Leaf: BLinkNode<K,V,Ptr>,
+    INode: PhysicalNode<K,Ptr,Ptr>,
+    Leaf: PhysicalNode<K,V,Ptr>,
+    OPS : BLinkOps<K,V,Ptr, INode, Leaf>,
     Storage: StorageManager<Ptr, Node<INode, Leaf>>,
     Locks: LockManager<Ptr>,
-    Stats: StatisticsManager> Container for BTree<Ptr, Storage, Locks, Stats> {
+    Stats: StatisticsManager> Container for BTree<Ptr, Storage, Locks, Stats, OPS> {
     fn len(&self) -> uint {
         self.statistics.elements()
     }
@@ -94,64 +60,48 @@ impl<'self,
 impl<K: TotalOrd + Clone + ToStr,
      V: ToStr,
      Ptr: Clone + Eq + ToStr,
-     INode:      BLinkNode<K, Ptr, Ptr>,
-     Leaf:       BLinkNode<K, V, Ptr>,
+     INode:      PhysicalNode<K, Ptr, Ptr>,
+     Leaf:       PhysicalNode<K, V, Ptr>,
+     OPS : BLinkOps<K,V,Ptr, INode, Leaf>,
      Storage:    StorageManager<Ptr, Node<INode, Leaf>>,
      Locks:      LockManager<Ptr>,
      Stats:      StatisticsManager>
-BTree<Ptr, Storage, Locks, Stats> {
+BTree<Ptr, Storage, Locks, Stats, OPS> {
     fn find<'a>(&'a self, key: &K) -> Option<&'a V> {
-        let (mut state, mut leaf, _) = self.find_leaf(key);
+        let (mut current_node, _) = self.find_leaf(key);
 
-        while !leaf.can_contain_key(state, key) {
-            let current_ptr = match leaf.scannode(state, key) {
-                Some((id, _)) => {
-                    unset!(state, MOST_LEFT_NODE);
-                    id
-                }
-                None => break
-            };
-            let current_node = self.storage.read(current_ptr).unwrap();
-            leaf = current_node.getLeaf();
+        while !self.ops.can_contain_key(current_node.getLeaf(), key) {
+            let current_ptr = self.ops.scannode(current_node, key).map(|n| { n.first()}).unwrap();
+                //Some((id, _)) => {
+                //    id
+                //}
+
+            current_node = self.storage.read(current_ptr).unwrap();
         }
-        leaf.get(state, key)
+        self.ops.get_value(current_node.getLeaf(), key)
     }
 }
-impl<'self,
-    K: Ord + Clone,
-    V,
-    Ptr: Clone,
-    INode:   BLinkNode<K, Ptr, Ptr>,
-    Leaf:    BLinkNode<K, V, Ptr>,
-    Storage:    StorageManager<Ptr, Node<INode, Leaf>>,
-    Locks:      LockManager<Ptr>,
-    Stats:      StatisticsManager>
-Clone for BTree<Ptr, Storage, Locks, Stats> {
-    fn clone(&self) -> BTree<Ptr, Storage, Locks, Stats> {
-        unsafe {
-            ptr::read_ptr(ptr::to_mut_unsafe_ptr(cast::transmute_mut(self)))
-        }
-    }
-}
+
 impl<'self,
     K: TotalOrd + Clone + ToStr,
     V: ToStr,
     Ptr: Clone + Eq + ToStr,
-    INODE:  BLinkNode<K, Ptr, Ptr>,
-    LEAF:       BLinkNode<K, V, Ptr>,
+    INODE:      PhysicalNode<K, Ptr, Ptr>,
+    LEAF:       PhysicalNode<K, V, Ptr>,
+    OPS :       BLinkOps<K,V,Ptr, INODE, LEAF>,
     Storage:    StorageManager<Ptr, Node<INODE, LEAF>>,
     Locks:      LockManager<Ptr>,
     Stats:      StatisticsManager>
-BTree<Ptr, Storage, Locks, Stats> {
+BTree<Ptr, Storage, Locks, Stats, OPS> {
     fn insert(&self, key: K, value: V) {
-        let (mut state, leaf, mut visited_nodes) = self.find_leaf(&key);
+        let (leaf, mut visited_nodes) = self.find_leaf(&key);
         let current_ptr = leaf.my_ptr();
         self.lock_manager.lock(leaf.my_ptr().clone());
-        let current_node = self.storage.read(current_ptr).unwrap();
-        let (mut current_ptr, current_node) = self.move_right(&mut state, current_node, &key);
+        let current_node = self.read(current_ptr);
+        let (mut current_ptr, current_node) = self.move_right(current_node, &key);
         unsafe {
             let mut_self = cast::transmute_mut(self);
-            let mut insert_res = mut_self.insert_into_leaf(state, current_node, key, value);
+            let mut insert_res = mut_self.insert_into_leaf(current_node, key, value);
 
             self.statistics.inc_elements();
             while insert_res.is_some() {
@@ -162,75 +112,39 @@ BTree<Ptr, Storage, Locks, Stats> {
                     None => {
                         if old_ptr == &self.root {   // we need to split the root
                             mut_self.new_root(key, old_ptr, &ptr);
-                            return;
+                            break;
                         } else { // root was splitted, need a new visited nodes stack to backtrace
-                            let (_,_, visited_stack) = self.find_inode(&key, old_ptr);
+                            let (_, visited_stack) = self.find_node(&key, |n| {n.my_ptr() == old_ptr});
                             visited_nodes = visited_stack;
                             visited_nodes.pop();
                             current_ptr = visited_nodes.pop();
                         }
                     }
                 }
-                if current_ptr == &self.root {
-                    state = ROOT;
-                }
+
                 self.lock_manager.lock(current_ptr.clone());
                 self.lock_manager.unlock(old_ptr);
-                let inode = self.storage.read(current_ptr).unwrap();
-                insert_res = mut_self.insert_into_inode(state, inode, key, ptr);
+                let inode = self.read(current_ptr);
+                insert_res = mut_self.insert_into_inode(inode, key, ptr);
             }
         }
         self.lock_manager.unlock(current_ptr);
     }
-    fn find_inode<'a>(&'a self, key: &K, inode_ptr: &Ptr) -> (u8, &'a INODE, ~[&'a Ptr]) {
-        // bit array to keep track of special events, like if current node is root
-        let mut state: u8 = ROOT;
-        let mut visited_nodes = ~[];
-        let mut current_ptr = &self.root;
-        let mut current_node = self.storage.read(current_ptr).unwrap();
 
-        // going the tree down
-        while current_ptr != inode_ptr {
-            let inode = current_node.getINode();
-            match inode.scannode(state, key) {
-                // link pointer are not saved for backtracing
-                Some((id, Right)) => {
-                    update_state!(state, Right);
-                    current_ptr = id;
-                }
-                // was not a link pointer, saving for backtracing
-                Some((id, movement)) => {
-                    update_state!(state, movement);
-                    visited_nodes.push(id);
-                    current_ptr = id;
-                }
-                None => fail!("inconsistent BTree")
-            }
-            current_node = self.storage.read(current_ptr).unwrap();
-        }
-        return (state, current_node.getINode(), visited_nodes)
-    }
-
-
-    fn find_leaf<'a>(&'a self, key: &K) -> (u8, &'a LEAF, ~[&'a Ptr]) {
-        // bit array to keep track of special events, like if current node is root
-        let mut state: u8 = ROOT;
+    fn find_node<'a>(&'a self, key: &K, predicate: &fn(n : &Node<INODE, LEAF>) -> bool)
+        -> (&'a Node<INODE,LEAF>, ~[&'a Ptr]) {
         let mut visited_nodes = ~[&self.root];
         let mut current_ptr = &self.root;
-        let mut current_node = self.storage.read(current_ptr).unwrap();
-
+        let mut current_node = self.read(current_ptr);
         // going the tree down
-        while current_node.isINode() {
-            let inode = current_node.getINode();
-            match inode.scannode(state, key) {
+        while current_node.isINode() && predicate(current_node) {
+            match self.ops.scannode(current_node, key) {
                 // link pointer are not saved for backtracing
                 Some((id, Right)) => {
-                    update_state!(state, Right);
                     current_ptr = id;
                 }
                 // was not a link pointer, saving for backtracing
-                Some((id, movement)) => {
-                    update_state!(state, movement);
+                Some((id, Down)) => {
                     visited_nodes.push(id);
                     current_ptr = id;
                 }
@@ -240,19 +154,19 @@ BTree<Ptr, Storage, Locks, Stats> {
         }
         // pops the leaf from the backtrace stack
         visited_nodes.pop_opt();
-        return (state, current_node.getLeaf(), visited_nodes)
+        return (current_node, visited_nodes)
+    }
+    fn find_leaf<'a>(&'a self, key: &K) -> (&'a Node<INODE,LEAF>, ~[&'a Ptr]) {
+        self.find_node(key, |_| {true})
     }
     // ensures that we are on the node that can contains the key
-    fn move_right<'a>(&'a self, state: &mut u8, node: &'a Node<INODE, LEAF>, key: &K)
+    fn move_right<'a>(&'a self, node: &'a Node<INODE, LEAF>, key: &K)
         -> (&'a Ptr, &'a Node<INODE, LEAF>) {
 
         let mut current_node = node;
         let mut current_ptr = node_method!(node, my_ptr);
         loop {
-            let maybe_right_ptr = match current_node {
-                &Leaf(ref leaf) => leaf.move_right(*state, key),
-                &INode(ref inode) => inode.move_right(*state, key)
-            };
+            let maybe_right_ptr = self.ops.move_right(current_node, key);
             match maybe_right_ptr {
                 Some(ptr) => {
                     self.lock_manager.lock(ptr.clone());
@@ -268,12 +182,12 @@ BTree<Ptr, Storage, Locks, Stats> {
 
     // if a split was necessary, it returns the pointer and the minimum key of the new leaf.
     // this method mutates the tree. call it only, if you hold a lock of the `node`.
-    fn insert_into_leaf(&mut self, state: u8, node: &Node<INODE, LEAF>, key: K, value: V) -> Option<(K, Ptr)> {
+    fn insert_into_leaf(&mut self, node: &Node<INODE, LEAF>, key: K, value: V) -> Option<(K, Ptr)> {
         let leaf = node.getLeaf();
         let at_least_one_left = self.max_size - 1;
         if !leaf.needs_split(at_least_one_left) {
             unsafe {  // not really, becouse we hold a lock of this node
-                cast::transmute_mut(leaf).insert(state, key, value);
+                self.ops.insert_leaf(cast::transmute_mut(leaf), key, value);
                 let mut_storage = cast::transmute_mut(&self.storage);
                 mut_storage.write(&leaf.my_ptr().clone(), node);
             }
@@ -283,23 +197,23 @@ BTree<Ptr, Storage, Locks, Stats> {
             unsafe {  // not really, becouse we hold a lock of this node
                 use std::cast::transmute_mut;
 
-                let new_leaf = transmute_mut(leaf)
-                    .split_and_insert(state, new_child_ptr.clone(), key, value);
+                let new_leaf = self.ops.split_and_insert_leaf(
+                    transmute_mut(leaf), new_child_ptr.clone(), key, value);
                 let leaf_max_key = leaf.max_key().clone();
                 let mut_storage = transmute_mut(&self.storage);
-                mut_storage.write(&new_child_ptr, &Leaf(*new_leaf));
+                mut_storage.write(&new_child_ptr, &Leaf(new_leaf));
                 mut_storage.write(&leaf.my_ptr().clone(), node);
                 self.statistics.inc_leafs();
                 return Some((leaf_max_key, new_child_ptr));
             }
         }
     }
-    fn insert_into_inode(&mut self, state: u8, node: &Node<INODE, LEAF>, key: K, ptr: Ptr) -> Option<(K, Ptr)> {
+    fn insert_into_inode(&mut self, node: &Node<INODE, LEAF>, key: K, ptr: Ptr) -> Option<(K, Ptr)> {
         let inode = node.getINode();
         let at_least_one_left = self.max_size - 1;
         if !inode.needs_split(at_least_one_left) {
             unsafe {  // not really, becouse we hold a lock over this node
-                cast::transmute_mut(inode).insert(state, key, ptr);
+                self.ops.insert_inode(cast::transmute_mut(inode), key, ptr);
                 cast::transmute_mut(&self.storage).write(&inode.my_ptr().clone(), node);
             }
             return None;
@@ -307,12 +221,12 @@ BTree<Ptr, Storage, Locks, Stats> {
             let new_page_ptr = self.storage.new_page();
 
             unsafe {  // not really, becouse we hold a lock of this node
-                let new_inode = cast::transmute_mut(inode)
-                    .split_and_insert(state, new_page_ptr.clone(), key, ptr);
+                let new_inode = self.ops.split_and_insert_inode(
+                    cast::transmute_mut(inode), new_page_ptr.clone(), key, ptr);
 
                 let inode_max_key = inode.max_key().clone();
                 let mut_storage = cast::transmute_mut(&self.storage);
-                mut_storage.write(&new_page_ptr, &INode(*new_inode));
+                mut_storage.write(&new_page_ptr, &INode(new_inode));
                 mut_storage.write(&inode.my_ptr().clone(), node);
                 self.statistics.inc_inodes();
                 return Some((inode_max_key, new_page_ptr));
@@ -321,7 +235,8 @@ BTree<Ptr, Storage, Locks, Stats> {
     }
     fn new_root(&mut self, key : K, smaller: &Ptr, bigger: &Ptr) {
         let new_root_ptr = self.storage.new_page();
-        let root = BLinkNode::new(new_root_ptr.clone(), None, ~[key.clone()], ~[smaller.clone(), bigger.clone()]);
+        let root = PhysicalNode::new(inode_type(), new_root_ptr.clone(), None,
+                                     ~[key.clone()], ~[smaller.clone(), bigger.clone()]);
         self.storage.write(&new_root_ptr, &INode(root));
 
         // we are still holding a lock over the old root, so we can be sure no one else will change
@@ -329,62 +244,72 @@ BTree<Ptr, Storage, Locks, Stats> {
         self.root = new_root_ptr;
         self.statistics.inc_inodes();
     }
+    fn read<'a>(&'a self, ptr: &Ptr) -> &'a Node<INODE, LEAF> {
+        use std::cast;
+        let node = self.storage.read(ptr).unwrap();
+        if ptr == &self.root {
+            unsafe {
+                cast::transmute_mut(node).add_type(Root);
+            }
+        }
+        return node;
+    }
 }
-pub fn is_in_state(state: u8, constant: u8) -> bool {
-    state & constant == constant
-}
-#[test]
-fn test_is_in_state() {
-    assert!(is_in_state(ROOT, ROOT))
-    assert!(! is_in_state(!ROOT, ROOT))
-    assert!(is_in_state(ROOT | MOST_LEFT_NODE, ROOT))
-}
+
 type UintBTree = BTree<uint,
                        StupidHashmapStorage<
                            uint,
                            Node<
-                               SimpleBLinkINode<uint,uint, uint>,
-                               SimpleBLinkLeaf<uint, uint,uint>
+                               DefaultBLinkNode<uint,uint, uint>,
+                               DefaultBLinkNode<uint, uint,uint>
                            >
                        >,
                        SimpleLockManager<uint>,
-                       AtomicStatistics>;
+                       AtomicStatistics,
+                       DefaultBLinkOps<uint,uint,uint,
+                           DefaultBLinkNode<uint,uint,uint>,
+                           DefaultBLinkNode<uint, uint, uint>>
+>;
 
 
 impl BTree<uint,
            StupidHashmapStorage<
                uint,
                Node<
-                   SimpleBLinkINode<uint,uint, uint>,
-                   SimpleBLinkLeaf<uint, uint,uint>
+                   DefaultBLinkNode<uint,uint, uint>,
+                   DefaultBLinkNode<uint, uint,uint>
                >
            >,
            SimpleLockManager<uint>,
-           AtomicStatistics>
+           AtomicStatistics,
+           DefaultBLinkOps<uint,uint,uint,
+                           DefaultBLinkNode<uint,uint,uint>,
+                           DefaultBLinkNode<uint, uint, uint>>
+>
 {
-        fn new_test() -> UintBTree {
-            BTree::new_test_with_size(4)
-        }
-        fn new_test_with_size(max_size: uint) -> UintBTree {
-            let root_ptr = 0;
-            let mut storage = StupidHashmapStorage::new();
-            let root = BLinkNode::new(root_ptr, None, ~[], ~[]);
-            storage.write(&root_ptr, &Leaf(root));
-            let btree = BTree {
-                root: root_ptr,
-                storage: storage,
-                lock_manager: SimpleLockManager::new(),
-                statistics: AtomicStatistics::new(),
-                max_size: max_size
-            };
-            btree.statistics.inc_leafs();
-            btree
-        }
+    fn new_test() -> UintBTree {
+        BTree::new_test_with_size(4)
     }
+    fn new_test_with_size(max_size: uint) -> UintBTree {
+        let root_ptr = 0;
+        let mut storage = StupidHashmapStorage::new();
+        let root = PhysicalNode::new(leaf_type(), root_ptr, None, ~[], ~[]);
+        storage.write(&root_ptr, &Leaf(root));
+        let btree = BTree {
+            root: root_ptr,
+            storage: storage,
+            lock_manager: SimpleLockManager::new(),
+            statistics: AtomicStatistics::new(),
+            max_size: max_size,
+            ops: DefaultBLinkOps
+        };
+        btree.statistics.inc_leafs();
+        btree
+    }
+}
 #[cfg(test)]
 mod test {
     use super::{BTree, UintBTree};
-    use std::rand::random;
     use extra::test::BenchHarness;
 
     fn insert_range(btree: &UintBTree, from: uint, to: uint) {
@@ -448,16 +373,14 @@ mod test {
         }
     }
 
-    #[test] #[ignore]
-    fn test_random_insertion() {
+    #[test]
+    fn test_long_insertion() {
         let btree = BTree::new_test_with_size(4);
-        for i in range(1u,1000) {
-            let key = random();
-            let value = random();
+        let keys_values: ~[(uint, uint)] = ~[ (123u,344u), (431,78), (134,789),(2,30),(103,104),(853,10), (343,0), (0,103), (13,54), (309,844), (567,999),(898,78),(211,234)];
+        for &(key,value) in keys_values.iter() {
             btree.insert(key, value);
-            assert!(btree.len() == i);
             let found = btree.find(&key);
-            assert!(found.is_some(), format!("key: {}, value: {}, i: {}", key, value, i));
+            assert!(found.is_some(), format!("key: {}, value: {}", key, value));
             assert!(found == Some(&value));
         }
     }
@@ -472,12 +395,28 @@ mod test {
         assert!(btree.statistics.inodes() == 1);
 
         let exp = ~[2,4];
-        assert!(root.inode.keys == exp, format!("root.keys {} != {}", root.inode.keys.to_str(), exp.to_str()));
-        let leaf = btree.storage.read(&root.inode.values[2]).unwrap().getLeaf();
+        assert!(root.keys == exp, format!("root.keys {} != {}", root.keys.to_str(), exp.to_str()));
+        let leaf = btree.storage.read(&root.values[2]).unwrap().getLeaf();
 
-        assert!(leaf.leaf.keys == ~[5,6,7], format!("leaf.keys {} != [6,7]", leaf.leaf.keys.to_str()));
+        assert!(leaf.keys == ~[5,6,7], format!("leaf.keys {} != [6,7]", leaf.keys.to_str()));
     }
-
+    #[test]
+    fn test_find() {
+        use std::cast;
+        let btree = BTree::new_test_with_size(4);
+        unsafe {
+            let root = cast::transmute_mut(btree.storage.read(&btree.root).unwrap().getLeaf());
+            btree.ops.insert_leaf(root, 1u,2u);
+            btree.ops.insert_leaf(root, 3u,5u);
+            btree.ops.insert_leaf(root, 4u,9u);
+            let expected = &2;
+            assert!(btree.find(&1) == Some(expected));
+            let expected = &5;
+            assert!(btree.find(&3) == Some(expected));
+            let expected = &9;
+            assert!(btree.find(&4) == Some(expected));
+        }
+    }
     #[test]
     fn test_find_after_leaf_split() {
         let btree = BTree::new_test_with_size(4);

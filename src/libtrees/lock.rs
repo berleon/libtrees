@@ -36,8 +36,9 @@ impl<T: Hash + Eq + Freeze> SimpleLockManager<T> {
         }
     }
 }
-impl<T: Hash + Eq + Clone + Freeze> LockManager<T> for SimpleLockManager<T> {
+impl<T: Hash + Eq + Clone + Freeze + ToStr> LockManager<T> for SimpleLockManager<T> {
     fn lock(&self, id: T) {
+        debug!("locking ptr: {}", id.to_str());
         do self.mutex.lock_cond |cond| {
             while self.set.contains(&id) {
                 cond.wait();

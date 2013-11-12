@@ -17,10 +17,11 @@
 use std::container::{Container};
 use std::cast;
 
+use lock::{LockManager, SimpleLockManager};
 use node::{Node, INode, Leaf};
+use persistent;
 use statistics::{StatisticsManager, AtomicStatistics};
 use storage::{StorageManager, StupidHashmapStorage};
-use lock::{LockManager, SimpleLockManager};
 use blinktree::blink_ops::{BLinkOps, DefaultBLinkOps, Right, Down};
 use blinktree::physical_node::{PhysicalNode, DefaultBLinkNode,
     Root, inode_type, leaf_type};
@@ -60,13 +61,14 @@ impl<'self,
 impl<K: TotalOrd + Clone + ToStr,
      V: ToStr,
      Ptr: Clone + Eq + ToStr,
-     INode:      PhysicalNode<K, Ptr, Ptr>,
-     Leaf:       PhysicalNode<K, V, Ptr>,
-     OPS : BLinkOps<K,V,Ptr, INode, Leaf>,
-     Storage:    StorageManager<Ptr, Node<INode, Leaf>>,
+     INODE:      PhysicalNode<K, Ptr, Ptr>,
+     LEAF:       PhysicalNode<K, V, Ptr>,
+     OPS : BLinkOps<K,V,Ptr, INODE, LEAF>,
+     Storage:    StorageManager<Ptr, Node<INODE, LEAF>>,
      Locks:      LockManager<Ptr>,
      Stats:      StatisticsManager>
-BTree<Ptr, Storage, Locks, Stats, OPS> {
+persistent::Map<K,V>
+for BTree<Ptr, Storage, Locks, Stats, OPS> {
     fn find<'a>(&'a self, key: &K) -> Option<&'a V> {
         let (mut current_node, _) = self.find_leaf(key);
 
@@ -80,19 +82,7 @@ BTree<Ptr, Storage, Locks, Stats, OPS> {
         }
         self.ops.get_value(current_node.getLeaf(), key)
     }
-}
 
-impl<'self,
-    K: TotalOrd + Clone + ToStr,
-    V: ToStr,
-    Ptr: Clone + Eq + ToStr,
-    INODE:      PhysicalNode<K, Ptr, Ptr>,
-    LEAF:       PhysicalNode<K, V, Ptr>,
-    OPS :       BLinkOps<K,V,Ptr, INODE, LEAF>,
-    Storage:    StorageManager<Ptr, Node<INODE, LEAF>>,
-    Locks:      LockManager<Ptr>,
-    Stats:      StatisticsManager>
-BTree<Ptr, Storage, Locks, Stats, OPS> {
     fn insert(&self, key: K, value: V) {
         let (leaf, mut visited_nodes) = self.find_leaf(&key);
         let current_ptr = leaf.my_ptr();
@@ -130,7 +120,22 @@ BTree<Ptr, Storage, Locks, Stats, OPS> {
         }
         self.lock_manager.unlock(current_ptr);
     }
+    #[allow(unused_variable)]
+    fn remove(&self, key: &K) {
+        fail!();
+    }
+}
 
+impl<K: TotalOrd + Clone + ToStr,
+     V: ToStr,
+     Ptr: Clone + Eq + ToStr,
+     INODE:      PhysicalNode<K, Ptr, Ptr>,
+     LEAF:       PhysicalNode<K, V, Ptr>,
+     OPS : BLinkOps<K,V,Ptr, INODE, LEAF>,
+     Storage:    StorageManager<Ptr, Node<INODE, LEAF>>,
+     Locks:      LockManager<Ptr>,
+     Stats:      StatisticsManager>
+BTree<Ptr, Storage, Locks, Stats, OPS> {
     fn find_node<'a>(&'a self, key: &K, predicate: &fn(n : &Node<INODE, LEAF>) -> bool)
         -> (&'a Node<INODE,LEAF>, ~[&'a Ptr]) {
         let mut visited_nodes = ~[&self.root];

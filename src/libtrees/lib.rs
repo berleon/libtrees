@@ -27,14 +27,14 @@ extern mod extra;
 
 
 mod algorithm;
-mod node;
-
 mod blinktree {
     pub mod blinktree;
     pub mod physical_node;
     mod blink_ops;
 }
 mod lock;
+mod node;
+mod persistent;
 mod storage;
 mod statistics;
 mod utils;

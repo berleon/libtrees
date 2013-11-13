@@ -1,5 +1,5 @@
 
-trait Map<K,V> {
+pub trait Map<K,V> {
     fn find<'a>(&'a self, key: &K) -> Option<&'a V>;
     fn contains_key(&self, key: &K) -> bool {
         self.find(key).is_some()

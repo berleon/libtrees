@@ -315,6 +315,7 @@ impl BTree<uint,
 #[cfg(test)]
 mod test {
     use super::{BTree, UintBTree};
+    use persistent::Map;
     use extra::test::BenchHarness;
 
     fn insert_range(btree: &UintBTree, from: uint, to: uint) {

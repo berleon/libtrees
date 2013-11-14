@@ -15,8 +15,7 @@
 
 use algorithm;
 use node::{Node, Leaf, INode};
-use blinktree::physical_node;
-use blinktree::physical_node::PhysicalNode;
+use blinktree::physical_node::{PhysicalNode, T_LEAF, T_INODE};
 
 #[deriving(Clone)]
 pub enum Movement {
@@ -25,8 +24,6 @@ pub enum Movement {
 }
 
 
-/// Some operations on a node require knowledge about the position of the node in the tree.
-/// For example if the current node is the root node, it can contain every posible key.
 pub trait BLinkOps<K: TotalOrd + ToStr,
                    V: ToStr,
                    Ptr: Clone + ToStr,
@@ -62,9 +59,10 @@ pub trait BLinkOps<K: TotalOrd + ToStr,
             return None;
         }
         let idx = algorithm::bsearch_idx(inode.keys().slice_from(0), key);
-        debug!("[get] ptr: {}, keys: {} values: {}, key: {}, idx: {}",
-                 inode.my_ptr().to_str(), inode.keys().to_str(),
-                 inode.values().to_str(), key.to_str(), idx.to_str());
+
+        debug!("[get_ptr] key: {}, ptr: {}, keys: {} values: {}, idx: {}, is_most_right_node: {}, is_root: {}",
+                 key.to_str(), inode.my_ptr().to_str(), inode.keys().to_str(),
+                 inode.values().to_str(), idx.to_str(), inode.is_most_right_node(), inode.is_root());
         Some(&inode.values()[idx])
     }
 
@@ -83,21 +81,29 @@ pub trait BLinkOps<K: TotalOrd + ToStr,
         }
     }
 
-
     fn split_and_insert_leaf(&self, leaf: &mut LEAF, new_page: Ptr, key: K, value: V) -> LEAF {
         let new_size = leaf.keys().len()/2;
         self.insert_leaf(leaf, key, value);
         let (keys_new, values_new) = leaf.split_at(new_size);
         let link_ptr = leaf.set_link_ptr(new_page.clone());
-        PhysicalNode::new(physical_node::leaf_type(),new_page, link_ptr, keys_new, values_new)
+        PhysicalNode::new(T_LEAF, new_page, link_ptr, keys_new, values_new)
     }
 
+    /// Default splitting strategy:
+    ///
+    /// example max_size = 4:
+    ///                                split
+    ///                                  |
+    ///    |<= 3 <|<= 5 <|<= 10 <|<= 15 <|<= 30
+    ///    .      .      .       .       .
+    ///
     fn split_and_insert_inode(&self, inode: &mut INODE, new_page: Ptr, key: K, value: Ptr) -> INODE {
         let new_size = inode.keys().len()/2;
         self.insert_inode(inode, key, value);
         let (keys_new, values_new) = inode.split_at(new_size);
+        debug!("[split_and_insert_inode] keys.len: {}, value.len: {}", keys_new.to_str(), values_new.to_str());
         let link_ptr = inode.set_link_ptr(new_page.clone());
-        PhysicalNode::new(physical_node::inode_type(), new_page, link_ptr, keys_new, values_new)
+        PhysicalNode::new(T_INODE, new_page, link_ptr, keys_new, values_new)
     }
 
     fn insert_leaf(&self, leaf: &mut LEAF, key: K, value: V) {
@@ -109,9 +115,9 @@ pub trait BLinkOps<K: TotalOrd + ToStr,
         let mut idx = algorithm::bsearch_idx(inode.keys().slice_from(0), &key);
         inode.mut_keys().insert(idx, key);
 
-        if (inode.is_root() || inode.is_most_right_node()) {
+        //if (inode.is_root() || inode.is_most_right_node()) {
             idx += 1;
-        }
+        //}
         inode.mut_values().insert(idx, value);
     }
     fn can_contain_key<
@@ -139,7 +145,7 @@ BLinkOps<K,V,Ptr,INODE, LEAF> for DefaultBLinkOps<K,V,Ptr, INODE, LEAF> {}
 #[cfg(test)]
 mod test {
     use super::{BLinkOps, DefaultBLinkOps};
-    use blinktree::physical_node::{PhysicalNode, DefaultBLinkNode, leaf_type, inode_type, Root};
+    use blinktree::physical_node::{PhysicalNode, DefaultBLinkNode, T_ROOT, T_LEAF};
     macro_rules! can_contains_range(
         ($node:ident, $from:expr, $to:expr) => (
             for i in range($from, $to+1) {
@@ -155,30 +161,27 @@ mod test {
         fn test(&self) {
             self.test_can_contain_key();
             self.test_needs_split();
-            self.test_root_insert_value_must_be_off_by_one();
+            self.test_insert_into_inode_ptr_must_be_off_by_one();
         }
         fn test_can_contain_key(&self) {
-            let mut tpe = leaf_type();
-            tpe.add(Root);
+            let tpe = T_ROOT ^ T_LEAF;
             let root : DefaultBLinkNode<uint, uint, uint> =
                 PhysicalNode::new(tpe, 0u, None, ~[2u],~[0u,1u]);
             can_contains_range!(root, 0u, 10);
             assert!(self.can_contain_key(&root, &10000));
 
             let leaf : DefaultBLinkNode<uint, uint, uint> =
-                PhysicalNode::new(leaf_type(), 0u, None, ~[2u,4],~[0,1]);
+                PhysicalNode::new(T_LEAF, 0u, None, ~[2u,4],~[0,1]);
             can_contains_range!(leaf, 0u, 4);
         }
         fn test_needs_split(&self) {
         }
 
-        //           root                  otherwise
+        //           ionde                otherwise
         //  keys:    . 4 .                  1 | 2 | 3
         //  values:  1   3                 10   1   4
-        fn test_root_insert_value_must_be_off_by_one(&self) {
-            let mut tpe = inode_type();
-            tpe.add(Root);
-            let mut inode: INODE = PhysicalNode::new(tpe, 0u, None, ~[1],~[0,1]);
+        fn test_insert_into_inode_ptr_must_be_off_by_one(&self) {
+            let mut inode: INODE = PhysicalNode::new(T_ROOT & T_LEAF, 0u, None, ~[1],~[0,1]);
             self.insert_inode(&mut inode, 4, 4);
             self.insert_inode(&mut inode, 3, 3);
             let expected = ~[0,1,3,4];

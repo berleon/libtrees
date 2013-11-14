@@ -50,5 +50,12 @@ mod test {
         assert!(rest == expected);
         assert!(vec == ~[]);
 
+        let mut vec = ~[1,2,3,4,5];
+        let expected = ~[3,4,5];
+        let rest = split_at(&mut vec, 2);
+        assert!(rest == expected, format!("{} != {}", rest.to_str(), expected.to_str()));
+        assert!(vec == ~[1,2]);
+
+
     }
 }

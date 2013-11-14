@@ -12,12 +12,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-use extra::enum_set::{EnumSet, CLike};
-
 use utils;
 
 pub trait PhysicalNode<K,V,Ptr> {
-    fn new(node_types: EnumSet<NodeTypes>, ptr: Ptr, link_ptr: Option<Ptr>,
+    fn new(node_types: uint, ptr: Ptr, link_ptr: Option<Ptr>,
            keys: ~[K], values: ~[V]) -> Self;
 
     // use this ptr to point to this node
@@ -38,9 +36,11 @@ pub trait PhysicalNode<K,V,Ptr> {
 
 
     fn is_root(&self) -> bool;
+    fn set_root(&mut self);
+    fn unset_root(&mut self);
     fn is_leaf(&self) -> bool;
     fn is_inode(&self) -> bool;
-    fn add_type(&mut self, tpe: NodeTypes);
+
     fn is_most_right_node(&self) -> bool {
         self.link_ptr().is_none()
     }
@@ -50,58 +50,41 @@ pub trait PhysicalNode<K,V,Ptr> {
 
 }
 
-pub fn inode_type() -> EnumSet<NodeTypes> {
-    let mut set = EnumSet::empty();
-    set.add(INode);
-    set
-}
+pub static T_ROOT: uint = 1 >> 0;
+pub static T_LEAF: uint = 1 >> 1;
+pub static T_INODE: uint = 1 >> 2;
 
-pub fn leaf_type() -> EnumSet<NodeTypes> {
-    let mut set = EnumSet::empty();
-    set.add(Leaf);
-    set
-}
-pub fn root_type() -> EnumSet<NodeTypes> {
-    let mut set = EnumSet::empty();
-    set.add(Root);
-    set
-}
-
-#[deriving(Clone)]
-pub enum NodeTypes {
-    Root,
-    Leaf,
-    INode
-}
-impl CLike for NodeTypes {
-    fn to_uint(&self) -> uint {
-        match *self {
-            Root  => 1 << 0,
-            Leaf  => 1 << 1,
-            INode => 1 << 2,
-        }
-    }
-    fn from_uint(number: uint) -> NodeTypes {
-        match number {
-            1 =>  Root,
-            2 =>  Leaf,
-            4 =>  INode,
-            _ => fail!()
-        }
-    }
-}
 #[deriving(Clone)]
 pub struct DefaultBLinkNode<K, V, Ptr> {
-    node_type: EnumSet<NodeTypes>,
+    node_type: uint,
     my_ptr: Ptr,
     keys: ~[K],
     values: ~[V],
     link_ptr: Option<Ptr>
 }
+fn is_node_type(tpe: uint, node_type: uint) -> bool {
+    tpe & node_type == node_type
+}
+#[test]
+fn test_is_node_type() {
+    assert!(is_node_type(T_ROOT, T_ROOT));
+    assert!(is_node_type(T_ROOT, T_ROOT));
+    assert!(! is_node_type(T_LEAF, T_ROOT));
+    assert!(! is_node_type(0, T_ROOT));
+}
 
+fn set_node_type(tpe: &mut uint, node_type: uint) {
+    *tpe =  *tpe | node_type;
+}
+#[test]
+fn test_set_node_type() {
+    let tpe = &mut 0;
+    set_node_type(tpe, T_ROOT);
+    assert!(*tpe == T_ROOT);
+}
 impl <K,V,Ptr>
 PhysicalNode<K,V,Ptr> for DefaultBLinkNode<K,V,Ptr> {
-    fn new(node_type: EnumSet<NodeTypes>, ptr: Ptr, link_ptr: Option<Ptr>,
+    fn new(node_type: uint, ptr: Ptr, link_ptr: Option<Ptr>,
            keys: ~[K], values: ~[V]) -> DefaultBLinkNode<K, V, Ptr> {
         DefaultBLinkNode {
             node_type: node_type,
@@ -144,17 +127,24 @@ PhysicalNode<K,V,Ptr> for DefaultBLinkNode<K,V,Ptr> {
         &mut self.values
     }
     fn is_root(&self) -> bool {
-        self.node_type.contains_elem(Root)
+        is_node_type(self.node_type,T_ROOT)
+    }
+    fn set_root(&mut self) {
+        set_node_type(&mut self.node_type, T_ROOT);
+    }
+    fn unset_root(&mut self) {
+        self.node_type = self.node_type & (! T_ROOT);
     }
     fn is_inode(&self) -> bool {
-        self.node_type.contains_elem(INode)
+        is_node_type(self.node_type,T_INODE)
     }
-    fn add_type(&mut self, tpe: NodeTypes) {
-        self.node_type.add(tpe);
+    fn is_leaf(&self) -> bool {
+        is_node_type(self.node_type,T_LEAF)
     }
-    fn is_leaf(&self)  -> bool {
-        self.node_type.contains_elem(INode)
+    fn set_root(&mut self) {
+        set_node_type(&mut self.node_type, T_ROOT);
     }
+
     fn needs_split(&self, max_size: uint) -> bool {
         max_size < self.keys.len()
     }

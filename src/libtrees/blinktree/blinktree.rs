@@ -23,8 +23,7 @@ use persistent;
 use statistics::{StatisticsManager, AtomicStatistics};
 use storage::{StorageManager, StupidHashmapStorage};
 use blinktree::blink_ops::{BLinkOps, DefaultBLinkOps, Right, Down};
-use blinktree::physical_node::{PhysicalNode, DefaultBLinkNode,
-    Root, inode_type, leaf_type};
+use blinktree::physical_node::{PhysicalNode, DefaultBLinkNode, T_INODE, T_LEAF};
 
 macro_rules! node_method(
     ($name:ident, $method:ident) => (
@@ -71,13 +70,8 @@ persistent::Map<K,V>
 for BTree<Ptr, Storage, Locks, Stats, OPS> {
     fn find<'a>(&'a self, key: &K) -> Option<&'a V> {
         let (mut current_node, _) = self.find_leaf(key);
-
         while !self.ops.can_contain_key(current_node.getLeaf(), key) {
-            let current_ptr = self.ops.scannode(current_node, key).map(|n| { n.first()}).unwrap();
-                //Some((id, _)) => {
-                //    id
-                //}
-
+            let (current_ptr,_) = self.ops.scannode(current_node, key).unwrap();
             current_node = self.storage.read(current_ptr).unwrap();
         }
         self.ops.get_value(current_node.getLeaf(), key)
@@ -88,7 +82,7 @@ for BTree<Ptr, Storage, Locks, Stats, OPS> {
         let current_ptr = leaf.my_ptr();
         self.lock_manager.lock(leaf.my_ptr().clone());
         let current_node = self.read(current_ptr);
-        let (mut current_ptr, current_node) = self.move_right(current_node, &key);
+        let (mut current_ptr, mut current_node) = self.move_right(current_node, &key);
         unsafe {
             let mut_self = cast::transmute_mut(self);
             let mut insert_res = mut_self.insert_into_leaf(current_node, key, value);
@@ -101,7 +95,7 @@ for BTree<Ptr, Storage, Locks, Stats, OPS> {
                     Some(p) => current_ptr = p,
                     None => {
                         if old_ptr == &self.root {   // we need to split the root
-                            mut_self.new_root(key, old_ptr, &ptr);
+                            mut_self.new_root(cast::transmute_mut(current_node), key, old_ptr, &ptr);
                             break;
                         } else { // root was splitted, need a new visited nodes stack to backtrace
                             let (_, visited_stack) = self.find_node(&key, |n| {n.my_ptr() == old_ptr});
@@ -111,13 +105,13 @@ for BTree<Ptr, Storage, Locks, Stats, OPS> {
                         }
                     }
                 }
-
                 self.lock_manager.lock(current_ptr.clone());
                 self.lock_manager.unlock(old_ptr);
-                let inode = self.read(current_ptr);
-                insert_res = mut_self.insert_into_inode(inode, key, ptr);
+                current_node = self.read(current_ptr);
+                insert_res = mut_self.insert_into_inode(current_node, key, ptr);
             }
         }
+        self.statistics.inc_insertions();
         self.lock_manager.unlock(current_ptr);
     }
     #[allow(unused_variable)]
@@ -169,7 +163,7 @@ BTree<Ptr, Storage, Locks, Stats, OPS> {
         -> (&'a Ptr, &'a Node<INODE, LEAF>) {
 
         let mut current_node = node;
-        let mut current_ptr = node_method!(node, my_ptr);
+        let mut current_ptr = node.my_ptr();
         loop {
             let maybe_right_ptr = self.ops.move_right(current_node, key);
             match maybe_right_ptr {
@@ -198,6 +192,7 @@ BTree<Ptr, Storage, Locks, Stats, OPS> {
             }
             return None;
         } else {
+            debug!("[insert_into_leaf] spliting: {}", leaf.keys().to_str());
             let new_child_ptr = self.storage.new_page();
             unsafe {  // not really, becouse we hold a lock of this node
                 use std::cast::transmute_mut;
@@ -238,15 +233,17 @@ BTree<Ptr, Storage, Locks, Stats, OPS> {
             }
         }
     }
-    fn new_root(&mut self, key : K, smaller: &Ptr, bigger: &Ptr) {
+    fn new_root(&mut self, current_node: &mut Node<INODE,LEAF>, key : K, smaller: &Ptr, bigger: &Ptr) {
+        debug!("new root key: {}", key.to_str());
         let new_root_ptr = self.storage.new_page();
-        let root = PhysicalNode::new(inode_type(), new_root_ptr.clone(), None,
+        let root = PhysicalNode::new(T_INODE, new_root_ptr.clone(), None,
                                      ~[key.clone()], ~[smaller.clone(), bigger.clone()]);
         self.storage.write(&new_root_ptr, &INode(root));
 
         // we are still holding a lock over the old root, so we can be sure no one else will change
         // the root pointer
         self.root = new_root_ptr;
+        current_node.unset_root();
         self.statistics.inc_inodes();
     }
     fn read<'a>(&'a self, ptr: &Ptr) -> &'a Node<INODE, LEAF> {
@@ -254,7 +251,7 @@ BTree<Ptr, Storage, Locks, Stats, OPS> {
         let node = self.storage.read(ptr).unwrap();
         if ptr == &self.root {
             unsafe {
-                cast::transmute_mut(node).add_type(Root);
+                cast::transmute_mut(node).set_root();
             }
         }
         return node;
@@ -298,7 +295,7 @@ impl BTree<uint,
     fn new_test_with_size(max_size: uint) -> UintBTree {
         let root_ptr = 0;
         let mut storage = StupidHashmapStorage::new();
-        let root = PhysicalNode::new(leaf_type(), root_ptr, None, ~[], ~[]);
+        let root = PhysicalNode::new(T_LEAF, root_ptr, None, ~[], ~[]);
         storage.write(&root_ptr, &Leaf(root));
         let btree = BTree {
             root: root_ptr,
@@ -316,6 +313,7 @@ impl BTree<uint,
 mod test {
     use super::{BTree, UintBTree};
     use persistent::Map;
+    use std::rand::random;
     use extra::test::BenchHarness;
 
     fn insert_range(btree: &UintBTree, from: uint, to: uint) {
@@ -391,6 +389,21 @@ mod test {
         }
     }
     #[test]
+    fn test_random_insertion() {
+        let btree = BTree::new_test_with_size(4);
+        for _ in range(0,10000) {
+            let r1: uint= random();
+            let r2: uint= random();
+            let key = r1 % 100000;
+            let value = r2 % 100000;
+            btree.insert(key, value);
+            let found = btree.find(&key);
+            assert!(found.is_some(), format!("key: {}, value: {}", key, value));
+            assert!(found == Some(&value));
+        }
+    }
+
+    #[test]
     fn test_leaf_split() {
         let btree = BTree::new_test_with_size(4);
         let size_leaf_needs_split = 7;
@@ -426,19 +439,19 @@ mod test {
     #[test]
     fn test_find_after_leaf_split() {
         let btree = BTree::new_test_with_size(4);
-        let size_leaf_needs_split = 8;
-        insert_range(&btree, 1, size_leaf_needs_split); // insert 1,2,3,4,5,6,7
+        let size_leaf_needs_split = 5;
+        insert_range(&btree, 1, size_leaf_needs_split+1); // insert 1,2,3,4,5
 
-        assert!(btree.statistics.leafs() == 3);
+        assert!(btree.statistics.leafs() == 2, format!("{} != 2", btree.statistics.leafs()));
         assert!(btree.statistics.inodes() == 1);
 
-        let expected = 7;
-        assert!(btree.find(&7) == Some(&expected));
+        let expected = 5;
+        assert!(btree.find(&5) == Some(&expected));
     }
 
-    #[bench] #[ignore] // meaningless until we have hard disk storage
+    #[bench]  #[ignore] // meaningless until we have hard disk storage
     fn bench_range_insert(b: &mut BenchHarness) {
-        let btree = BTree::new_test_with_size(1000);
+        let btree = BTree::new_test_with_size(4);
         let mut i = 0;
         do b.iter {
             btree.insert(i, i);

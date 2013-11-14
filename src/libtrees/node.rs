@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-use blinktree::physical_node::{PhysicalNode, NodeTypes};
+use blinktree::physical_node::{PhysicalNode};
 
 #[deriving(Clone)]
 pub enum Node<I, L> {
@@ -56,7 +56,14 @@ macro_rules! node_method(
         }
     )
 )
-
+macro_rules! mut_node_method(
+    ($method:ident) => (
+        match self {
+            &INode(ref mut inode) => inode.$method(),
+            &Leaf(ref mut leaf) => leaf.$method()
+        }
+    )
+)
 impl <K,V,Ptr,
      INODE: PhysicalNode<K,Ptr,Ptr>,
      LEAF: PhysicalNode<K,V,Ptr>>
@@ -82,19 +89,18 @@ Node<INODE, LEAF> {
     pub fn is_root(&self) -> bool {
         node_method!(is_root)
     }
+    pub fn set_root(&mut self) {
+        mut_node_method!(set_root)
+    }
+    pub fn unset_root(&mut self) {
+        mut_node_method!(unset_root)
+    }
     pub fn is_leaf(&self) -> bool {
         node_method!(is_leaf)
     }
     pub fn is_inode(&self) -> bool {
         node_method!(is_inode)
     }
-    pub fn add_type(&mut self, node_type: NodeTypes) {
-        match self {
-            &INode(ref mut inode) => inode.add_type(node_type),
-            &Leaf(ref mut leaf) => leaf.add_type(node_type)
-        }
-    }
-
     pub fn is_most_right_node(&self) -> bool {
         self.link_ptr().is_none()
     }

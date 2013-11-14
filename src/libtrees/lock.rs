@@ -39,7 +39,7 @@ impl<T: Hash + Eq + Freeze> SimpleLockManager<T> {
 impl<T: Hash + Eq + Clone + Freeze + ToStr> LockManager<T> for SimpleLockManager<T> {
     fn lock(&self, id: T) {
         debug!("locking ptr: {}", id.to_str());
-        do self.mutex.lock_cond |cond| {
+       /* do self.mutex.lock_cond |cond| {
             while self.set.contains(&id) {
                 cond.wait();
             }
@@ -47,15 +47,16 @@ impl<T: Hash + Eq + Clone + Freeze + ToStr> LockManager<T> for SimpleLockManager
                 let mut_set = cast::transmute_mut(&self.set);
                 mut_set.insert(id.clone());
             }
-        }
+        }*/
     }
     fn unlock(&self, id: &T) {
-        do self.mutex.lock_cond |cond| {
+        debug!("unlocking ptr: {}", id.to_str());
+        /*do self.mutex.lock_cond |cond| {
             unsafe {
                 let mut_set = cast::transmute_mut(&self.set);
                 mut_set.remove(id);
                 cond.signal();
             }
-        }
+        }*/
     }
 }

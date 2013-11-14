@@ -3,15 +3,15 @@ compile:
 	mkdir -p build/compile
 	rustc --out-dir build/compile --lib src/libtrees/lib.rs
 
-test-compile:
-	mkdir -p build/test
-	rustc  -o ./build/test/libtree_test --test src/libtrees/lib.rs
-test: test-compile
-	./build/test/libtree_test $(TESTNAME)
+check-compile:
+	mkdir -p build/
+	rustc  -o ./build/libtree_check --test src/libtrees/lib.rs
+check: check-compile
+	./build/libtree_check $(TESTNAME)
 bench:
 	mkdir -p build/test
-	rustc -O -o ./build/test/libtree_bench --test src/libtrees/lib.rs
-	./build/test/libtree_bench --bench $(TESTNAME)
+	rustc -O -o ./build/libtree_bench --test src/libtrees/lib.rs
+	./build/libtree_bench --bench $(TESTNAME)
 
 
 
